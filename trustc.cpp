@@ -381,23 +381,19 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-        
-            // Парсим условие
+
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables);
                 
                 if (conditionValue != 0.0) {
-                    // Ищем начало блока
                     size_t blockStart = lineTrimmed.find('{', closeParen + 1);
                     int braceLevel = 1;
                     vector<string> blockContent;
                     size_t originalLineIndex = lineIndex;
-        
-                    // Если { не в текущей строке
+
                     if (blockStart == string::npos) {
                         lineIndex++;
-                        lineNumber++;
                         if (lineIndex >= lines.size()) {
                             reportError(lineNumber, origLine, "missing '{' after if");
                             errorOccurred = true;
@@ -405,8 +401,7 @@ int main(int argc, char* argv[]) {
                         }
                         blockStart = lines[lineIndex].find('{');
                     }
-        
-                    // Собираем весь блок
+
                     while (lineIndex < lines.size()) {
                         string currentLine = lines[lineIndex];
                         bool foundClosing = false;
@@ -423,30 +418,27 @@ int main(int argc, char* argv[]) {
                                 break;
                             }
                         }
-        
+
                         blockContent.push_back(currentLine);
                         lineIndex++;
                         lineNumber++;
                         
                         if (foundClosing) {
-                            lineIndex--; // Возвращаемся к строке с }
+                            lineIndex--;
                             lineNumber--;
                             break;
                         }
                     }
-        
-                    // Проверяем баланс скобок
+
                     if (braceLevel != 0) {
                         reportError(lineNumber, origLine, "unclosed block in if");
                         errorOccurred = true;
                         break;
                     }
-        
-                    // Обрабатываем содержимое блока
+
                     for (auto& bline : blockContent) {
                         string trimmed = trim(bline);
                         
-                        // Удаляем обрамляющие {}
                         if (bline == blockContent.front()) {
                             size_t firstBrace = bline.find('{');
                             if (firstBrace != string::npos) {
@@ -459,8 +451,7 @@ int main(int argc, char* argv[]) {
                                 bline = bline.substr(0, lastBrace);
                             }
                         }
-        
-                        // Рекурсивная обработка строк блока
+
                         if (!trim(bline).empty()) {
                             lines.insert(lines.begin() + lineIndex, bline);
                         }
