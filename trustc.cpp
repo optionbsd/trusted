@@ -391,50 +391,24 @@ int main(int argc, char* argv[]) {
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables);
-                size_t currentLineIndex = lineIndex; // Объявляем здесь!
-                
+                size_t currentLineIndex = lineIndex;
+
                 if (conditionValue != 1.0) {
-                    size_t blockStart = lineTrimmed.find('{', closeParen + 1);
+                    // Пропускаем блок if, если условие не выполняется
                     int braceLevel = 1;
-                    vector<string> blockContent;
-        
-                    // Находим начало блока {
-                    if (blockStart == string::npos) {
-                        currentLineIndex++;
-                        if (currentLineIndex >= lines.size()) {
-                            reportError(lineNumber, origLine, "missing '{' after if");
-                            errorOccurred = true;
-                            break;
-                        }
-                        blockStart = lines[currentLineIndex].find('{');
-                        if (blockStart == string::npos) {
-                            reportError(lineNumber, origLine, "missing '{' after if");
-                            errorOccurred = true;
-                            break;
-                        }
-                    }
-        
-                    currentLineIndex++; // Переходим к строке после {
-        
-                    // Собираем все строки блока
                     while (currentLineIndex < lines.size() && braceLevel > 0) {
                         string currentLine = lines[currentLineIndex];
                         for (char c : currentLine) {
                             if (c == '{') braceLevel++;
                             if (c == '}') braceLevel--;
                         }
-                        if (braceLevel == 0) break;
-                        blockContent.push_back(currentLine);
                         currentLineIndex++;
                     }
-        
-                    // Вставляем строки блока
-                    lines.insert(lines.begin() + lineIndex + 1, blockContent.begin(), blockContent.end());
+                    lineIndex = currentLineIndex - 1; // Устанавливаем lineIndex на строку после блока if
+                } else {
+                    // Если условие выполняется, просто продолжаем выполнение
+                    // Блок if будет обработан как обычно
                 }
-        
-                // Обновляем lineIndex для ВСЕХ случаев (даже если condition == false)
-                lineIndex = currentLineIndex; 
-        
             } catch(exception& e) {
                 reportError(lineNumber, origLine, e.what());
                 errorOccurred = true;
