@@ -3,7 +3,7 @@ Integer calcInt = 2+2*2;
 
 String someString = "Hello from Trusted!";
 
-Bool doesCodeRun = false;
+Bool doesCodeRun = true;
 
 if (doesCodeRun) {
     print(someInt);
