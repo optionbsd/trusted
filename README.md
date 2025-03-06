@@ -25,11 +25,19 @@ Trusted - простой язык программирования, исполь
   ```
   - просто выведет `Hello, world!`
 
+
+
+    
+
   ```
   Integer myInt = 2+2*2;
   print(myInt);
   ```
   - выведет `6`
+
+
+
+    
 
   ```
   Bool myBool = true;
