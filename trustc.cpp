@@ -393,7 +393,7 @@ int main(int argc, char* argv[]) {
                 double conditionValue = evaluateExpression(conditionExpr, variables);
                 size_t currentLineIndex = lineIndex; // Объявляем здесь!
                 
-                if (conditionValue != 0.0) {
+                if (conditionValue != 1.0) {
                     size_t blockStart = lineTrimmed.find('{', closeParen + 1);
                     int braceLevel = 1;
                     vector<string> blockContent;
