@@ -381,7 +381,7 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-
+        
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables);
@@ -390,72 +390,57 @@ int main(int argc, char* argv[]) {
                     size_t blockStart = lineTrimmed.find('{', closeParen + 1);
                     int braceLevel = 1;
                     vector<string> blockContent;
-                    size_t originalLineIndex = lineIndex;
-
+                    size_t currentLineIndex = lineIndex;
+        
+                    // Находим начало блока {
                     if (blockStart == string::npos) {
-                        lineIndex++;
-                        if (lineIndex >= lines.size()) {
+                        currentLineIndex++;
+                        if (currentLineIndex >= lines.size()) {
                             reportError(lineNumber, origLine, "missing '{' after if");
                             errorOccurred = true;
                             break;
                         }
-                        blockStart = lines[lineIndex].find('{');
-                    }
-
-                    while (lineIndex < lines.size()) {
-                        string currentLine = lines[lineIndex];
-                        bool foundClosing = false;
-                        
-                        for (size_t i = (lineIndex == originalLineIndex) ? blockStart : 0; 
-                             i < currentLine.size(); 
-                             i++) 
-                        {
-                            if (currentLine[i] == '{') braceLevel++;
-                            if (currentLine[i] == '}') braceLevel--;
-                            
-                            if (braceLevel == 0) {
-                                foundClosing = true;
-                                break;
-                            }
-                        }
-
-                        blockContent.push_back(currentLine);
-                        lineIndex++;
-                        lineNumber++;
-                        
-                        if (foundClosing) {
-                            lineIndex--;
-                            lineNumber--;
+                        blockStart = lines[currentLineIndex].find('{');
+                        if (blockStart == string::npos) {
+                            reportError(lineNumber, origLine, "missing '{' after if");
+                            errorOccurred = true;
                             break;
                         }
+                        currentLineIndex++; // Переходим к строке после {
+                    } else {
+                        currentLineIndex = lineIndex;
+                        currentLineIndex++; // Пропускаем текущую строку с {
                     }
-
-                    if (braceLevel != 0) {
-                        reportError(lineNumber, origLine, "unclosed block in if");
-                        errorOccurred = true;
+        
+                    // Собираем все строки блока
+                    while (currentLineIndex < lines.size() && braceLevel > 0) {
+                        string currentLine = lines[currentLineIndex];
+                        for (char c : currentLine) {
+                            if (c == '{') braceLevel++;
+                            if (c == '}') braceLevel--;
+                        }
+                        if (braceLevel == 0) break;
+                        blockContent.push_back(currentLine);
+                        currentLineIndex++;
+                    }
+        
+                    // Рекурсивная обработка блока
+                    size_t savedLineIndex = lineIndex;
+                    for (const string& bline : blockContent) {
+                        lines.insert(lines.begin() + lineIndex + 1, bline);
+                        lineIndex++;
+                    }
+                    lineIndex = savedLineIndex - 1; // Вернуться к текущей строке
+                }
+        
+                // Пропускаем строки блока в основном цикле
+                while (lineIndex < lines.size()) {
+                    string currentLine = lines[lineIndex];
+                    if (currentLine.find('}') != string::npos) {
+                        lineIndex++;
                         break;
                     }
-
-                    for (auto& bline : blockContent) {
-                        string trimmed = trim(bline);
-                        
-                        if (bline == blockContent.front()) {
-                            size_t firstBrace = bline.find('{');
-                            if (firstBrace != string::npos) {
-                                bline = bline.substr(firstBrace + 1);
-                            }
-                        }
-                        if (bline == blockContent.back()) {
-                            size_t lastBrace = bline.rfind('}');
-                            if (lastBrace != string::npos) {
-                                bline = bline.substr(0, lastBrace);
-                            }
-                        }
-
-                        if (!trim(bline).empty()) {
-                            lines.insert(lines.begin() + lineIndex, bline);
-                        }
-                    }
+                    lineIndex++;
                 }
             } catch(exception& e) {
                 reportError(lineNumber, origLine, e.what());
