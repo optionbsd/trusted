@@ -1,16 +1,12 @@
-Bool myBool = true;
-Bool mySecondBool = false;
+Integer someInt = 10;
+Integer calcInt = 2+2*2;
 
-String myString = "ahahah";
-Integer i = 42;
+String someString = "Hello from Trusted!";
 
-print(i);
-print(myString);
+Bool doesCodeRun = false;
 
-if (myBool) {
-    print("Yeah");
-}
-
-if (mySecondBool) {
-    print("Naah");
+if (doesCodeRun) {
+    print(someInt);
+    print(calcInt);
+    print(someString);
 }
