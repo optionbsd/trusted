@@ -1,5 +1,6 @@
 /main
 /trustc
+/.DS_Store
 *.exe
 *.out
 *.o
