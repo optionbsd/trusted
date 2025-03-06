@@ -1,0 +1,5 @@
+/main
+/trustc
+*.exe
+*.out
+*.o

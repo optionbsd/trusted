@@ -1,0 +1,16 @@
+Bool myBool = true;
+Bool mySecondBool = false;
+
+String myString = "ahahah";
+Integer i = 42;
+
+print(i);
+print(myString);
+
+if (myBool) {
+    print("Yeah");
+}
+
+if (mySecondBool) {
+    print("Naah");
+}
