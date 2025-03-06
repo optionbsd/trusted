@@ -1,2 +1,62 @@
-# trusted
-Trusted - самый простейший компилируемый язык. Есть перменные типа Integer, String, Boolean и реализация фнукции print. Ещё тут можно выполнять математические действия типа 2+2*2. И есть if ахахахахахаха
+# Trusted
+
+<p align="center">
+  <img src="logo.png" alt="Trusted Logo" width="400">
+</p>
+
+Trusted - простой язык программирования, использующий LLVM для компиляции. 
+
+## Синтаксис
+ - `Integer <VariableName> = <VariableValue>;` - создает переменную типа integer
+ - `String <VariableName> = <VariableValue>;` - создает переменную типа string
+ - `Bool <VariableName> = <true/false>;` - создает переменную типа bool с значением ture или false
+ - `FunctionName(args...);` - вызывает функцию с аругментами
+ - `"Value"` - строка
+ - `<IntValue>` - целое число
+ - `
+   if (condition) {
+      action();
+   }
+   ` - если `condition` эквивалентно true то выполняется `action();`
+
+## Примеры кода
+  ```
+  print("Hello, world!");
+  ```
+  - просто выведет `Hello, world!`
+
+  ```
+  Integer myInt = 2+2*2;
+  print(myInt);
+  ```
+  - выведет `6`
+
+  ```
+  Bool myBool = true;
+  Bool mySecondBool = false;
+  
+  if (myBool) {
+      print("Yeah");
+  }
+  
+  if (mySecondBool) {
+      print("Nah");
+  }
+  ```
+  - выведет `Yeah` так как `myBool` - true, а `mySecondBool` - false
+
+## Сборка Trusted кода
+
+Просто используйте `trustc <путь к коду>`. На выходе вы получите исполняемый файл
+
+## Сборка компилятора
+
+Зависимости:
+
+```
+clang
+llvm
+make
+```
+
+После установки зависимостей напишите `make`. Это автоматически соберет компилятор а так же тестовый Trusted код, после чего запустит его
