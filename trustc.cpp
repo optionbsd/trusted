@@ -219,6 +219,12 @@ int main(int argc, char* argv[]) {
         lineNumber++;
         string origLine = lines[lineIndex];
         string lineTrimmed = trim(origLine);
+
+        if (lineTrimmed.empty() || lineTrimmed == "}") {
+            lineNumber--; // Корректируем номер строки
+            continue;
+        }
+    
         if(lineTrimmed.empty())
             continue;
         
@@ -385,12 +391,12 @@ int main(int argc, char* argv[]) {
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables);
+                size_t currentLineIndex = lineIndex; // Объявляем здесь!
                 
                 if (conditionValue != 0.0) {
                     size_t blockStart = lineTrimmed.find('{', closeParen + 1);
                     int braceLevel = 1;
                     vector<string> blockContent;
-                    size_t currentLineIndex = lineIndex;
         
                     // Находим начало блока {
                     if (blockStart == string::npos) {
@@ -406,11 +412,9 @@ int main(int argc, char* argv[]) {
                             errorOccurred = true;
                             break;
                         }
-                        currentLineIndex++; // Переходим к строке после {
-                    } else {
-                        currentLineIndex = lineIndex;
-                        currentLineIndex++; // Пропускаем текущую строку с {
                     }
+        
+                    currentLineIndex++; // Переходим к строке после {
         
                     // Собираем все строки блока
                     while (currentLineIndex < lines.size() && braceLevel > 0) {
@@ -424,24 +428,13 @@ int main(int argc, char* argv[]) {
                         currentLineIndex++;
                     }
         
-                    // Рекурсивная обработка блока
-                    size_t savedLineIndex = lineIndex;
-                    for (const string& bline : blockContent) {
-                        lines.insert(lines.begin() + lineIndex + 1, bline);
-                        lineIndex++;
-                    }
-                    lineIndex = savedLineIndex - 1; // Вернуться к текущей строке
+                    // Вставляем строки блока
+                    lines.insert(lines.begin() + lineIndex + 1, blockContent.begin(), blockContent.end());
                 }
         
-                // Пропускаем строки блока в основном цикле
-                while (lineIndex < lines.size()) {
-                    string currentLine = lines[lineIndex];
-                    if (currentLine.find('}') != string::npos) {
-                        lineIndex++;
-                        break;
-                    }
-                    lineIndex++;
-                }
+                // Обновляем lineIndex для ВСЕХ случаев (даже если condition == false)
+                lineIndex = currentLineIndex; 
+        
             } catch(exception& e) {
                 reportError(lineNumber, origLine, e.what());
                 errorOccurred = true;
