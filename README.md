@@ -10,6 +10,7 @@ Trusted - простой язык программирования, исполь
  - `Integer <VariableName> = <VariableValue>;` - создает переменную типа integer
  - `String <VariableName> = <VariableValue>;` - создает переменную типа string
  - `Bool <VariableName> = <true/false>;` - создает переменную типа bool с значением ture или false
+ - `Array <ArrayName> = [<data>, <data>...];` - создает массив
  - `FunctionName(args...);` - вызывает функцию с аругментами
  - `"Value"` - строка
  - `<IntValue>` - целое число
@@ -18,6 +19,8 @@ Trusted - простой язык программирования, исполь
       action();
    }
    ` - если `condition` эквивалентно true то выполняется `action();`
+
+  - `!<condition>` - логическое отрицание
 
 ## Примеры кода
   ```
