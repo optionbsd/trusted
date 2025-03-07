@@ -35,7 +35,6 @@ string removeLineComments(const string &line) {
     bool inQuote = false;
     for (size_t i = 0; i < line.size(); i++) {
         if (line[i] == '\"') {
-            // Если кавычка не экранирована, переключаем флаг
             if (i == 0 || line[i-1] != '\\')
                 inQuote = !inQuote;
         }
@@ -163,7 +162,6 @@ private:
 
     double parseFactor() {
         skipSpaces();
-        // Поддержка логического отрицания
         if (pos < s.size() && s[pos] == '!') {
             pos++;
             double value = parseFactor();
@@ -267,7 +265,6 @@ int main(int argc, char* argv[]) {
     vector<string> lines;
     string line;
     while(getline(inFile, line)) {
-        // Удаляем комментарии перед добавлением строки
         line = removeLineComments(line);
         lines.push_back(line);
     }
@@ -275,8 +272,13 @@ int main(int argc, char* argv[]) {
     unordered_map<string, double> variables;
     unordered_map<string, string> stringVariables;
     unordered_map<string, vector<ArrayElement>> arrays;
+    // Для вывода из print и для вызовов функций будем использовать outputs:
+    // Если строка начинается с "CALL_FUNCTION:" – это вызов функции.
     vector<string> outputs;
     vector<int> outLengths;
+    
+    // Хранение объявлений функций: имя -> вектор строк тела функции
+    unordered_map<string, vector<string>> functions;
     
     int lineNumber = 0;
     bool errorOccurred = false;
@@ -290,8 +292,8 @@ int main(int argc, char* argv[]) {
             lineNumber--;
             continue;
         }
-        if(lineTrimmed.empty()) continue;
         
+        // Обработка объявления переменных и массивов
         if (lineTrimmed.rfind("Integer", 0) == 0) {
             string rest = trim(lineTrimmed.substr(7));
             size_t pos = 0;
@@ -430,6 +432,44 @@ int main(int argc, char* argv[]) {
             }
             if (!errorOccurred) arrays[arrayName] = arrayElements;
         }
+        // Обработка объявления функций
+        else if (lineTrimmed.rfind("Memory", 0) == 0) {
+            string rest = trim(lineTrimmed.substr(6));
+            size_t eqPos = rest.find('=');
+            if(eqPos == string::npos) {
+                reportError(lineNumber, origLine, "find '=' in function declaration");
+                errorOccurred = true;
+                break;
+            }
+            string funcName = trim(rest.substr(0, eqPos));
+            rest = trim(rest.substr(eqPos + 1));
+            if(rest != "{") {
+                reportError(lineNumber, origLine, "expected '{' after '=' in function declaration");
+                errorOccurred = true;
+                break;
+            }
+            // Определяем блок функции
+            size_t endBlock = skipBlock(lines, lineIndex);
+            // Сохраним тело функции без первой и последней строки (открывающая и закрывающая фигурные скобки)
+            vector<string> funcBody;
+            for (size_t i = lineIndex + 1; i < endBlock - 1; i++) {
+                funcBody.push_back(lines[i]);
+            }
+            functions[funcName] = funcBody;
+            lineIndex = endBlock - 1;
+        }
+        // Обработка вызова функции: идентификатор с последующими "();"
+        else if (lineTrimmed.size() > 3 && lineTrimmed.substr(lineTrimmed.size()-3) == "();") {
+            string funcName = trim(lineTrimmed.substr(0, lineTrimmed.size()-3));
+            if(functions.find(funcName) == functions.end()){
+                reportError(lineNumber, origLine, "undefined function: " + funcName);
+                errorOccurred = true;
+                break;
+            }
+            // Записываем специальную метку для генерации вызова функции в IR
+            outputs.push_back("CALL_FUNCTION:" + funcName);
+            outLengths.push_back(0);
+        }
         else if (lineTrimmed.rfind("print", 0) == 0) {
             size_t pos = 5;
             while(pos < lineTrimmed.size() && isspace(lineTrimmed[pos])) pos++;
@@ -523,7 +563,6 @@ int main(int argc, char* argv[]) {
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables, arrays);
-                // Если условие ложно – пропускаем блок if, используя функцию skipBlock.
                 if (conditionValue != 1.0) {
                     lineIndex = skipBlock(lines, lineIndex) - 1;
                 }
@@ -549,19 +588,78 @@ int main(int argc, char* argv[]) {
     ostringstream llvmIR;
     llvmIR << "; ModuleID = \"trust_module\"\ndeclare i32 @printf(i8*, ...)\n\n";
     
+    // Генерируем глобальные строки для print вызовов в основном блоке.
     vector<string> globalNames;
     for(size_t i = 0; i < outputs.size(); i++) {
+        // Если это вызов функции, пропускаем генерацию глобальной строки.
+        if(outputs[i].substr(0, 14) == "CALL_FUNCTION:") continue;
         string globalName = ".str." + to_string(i);
         globalNames.push_back(globalName);
         llvmIR << llvmGlobalString(outputs[i], globalName, outLengths[i]) << "\n";
     }
+    
+    // Генерируем функцию main
     llvmIR << "\ndefine i32 @main() {\nentry:\n";
-    for(size_t i = 0; i < globalNames.size(); i++) {
-        llvmIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
-               << outLengths[i] << " x i8], ["
-               << outLengths[i] << " x i8]* @" << globalNames[i] << ", i32 0, i32 0))\n";
+    int globalIndex = 0;
+    for(size_t i = 0; i < outputs.size(); i++) {
+        if(outputs[i].substr(0, 14) == "CALL_FUNCTION:") {
+            string funcName = outputs[i].substr(14);
+            llvmIR << "  call void @" << funcName << "()\n";
+        } else {
+            llvmIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
+                   << outLengths[i] << " x i8], ["
+                   << outLengths[i] << " x i8]* @" << globalNames[globalIndex++] << ", i32 0, i32 0))\n";
+        }
     }
     llvmIR << "  ret i32 0\n}\n";
+    
+    // Генерируем IR для функций
+    for (auto &p : functions) {
+        string funcName = p.first;
+        vector<string> funcBody = p.second;
+        // Для простоты генерируем функцию с поддержкой только вызовов print (без if и т.п.)
+        ostringstream funcIR;
+        // Собираем глобальные строки для вызовов print внутри функции
+        vector<string> funcGlobals;
+        vector<int> funcGlobalLens;
+        vector<string> funcOutputIR; // IR-инструкции внутри функции
+        int tempGlobalCount = 0;
+        for (string &fline : funcBody) {
+            string ftrim = trim(fline);
+            if (ftrim.rfind("print", 0) == 0) {
+                size_t pos = 5;
+                while(pos < ftrim.size() && isspace(ftrim[pos])) pos++;
+                if(pos >= ftrim.size() || ftrim[pos] != '(') continue;
+                pos++;
+                size_t argsStart = pos;
+                size_t closingParen = ftrim.find(')', pos);
+                if(closingParen == string::npos) continue;
+                string argsStr = trim(ftrim.substr(argsStart, closingParen - argsStart));
+                pos = closingParen + 1;
+                if(argsStr.size() >= 2 && argsStr.front() == '\"' && argsStr.back() == '\"') {
+                    string outStr = argsStr.substr(1, argsStr.size()-2);
+                    string globalName = ".fstr." + funcName + "." + to_string(tempGlobalCount);
+                    funcGlobals.push_back(llvmGlobalString(outStr, globalName, outStr.size()+2));
+                    funcGlobalLens.push_back(outStr.size()+2);
+                    funcOutputIR.push_back("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
+                                            + to_string(outStr.size()+2) + " x i8], [" 
+                                            + to_string(outStr.size()+2) + " x i8]* @" + globalName + ", i32 0, i32 0))");
+                    tempGlobalCount++;
+                }
+            }
+            // Можно расширить поддержку и для других выражений внутри функций
+        }
+        // Выводим глобальные строки для функции
+        for (auto &glob : funcGlobals) {
+            llvmIR << glob << "\n";
+        }
+        funcIR << "define void @" << funcName << "() {\nentry:\n";
+        for (auto &instr : funcOutputIR) {
+            funcIR << instr << "\n";
+        }
+        funcIR << "  ret void\n}\n";
+        llvmIR << funcIR.str();
+    }
     
     fs::path llvmFile = tmpDir / "output.ll";
     ofstream outLL(llvmFile);
