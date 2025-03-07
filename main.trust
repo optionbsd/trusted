@@ -1,12 +1,19 @@
+Array myArray = [10, true, false, "Hello"];
+
 Integer someInt = 10;
 Integer calcInt = 2+2*2;
 
 String someString = "Hello from Trusted!";
 
-Bool doesCodeRun = true;
+Bool doesCodeRun = false;
 
-if (doesCodeRun) {
+if (!doesCodeRun) {
     print(someInt);
     print(calcInt);
     print(someString);
+
+    print(myArray[0]);
+    print(myArray[1]);
+    print(myArray[2]);
+    print(myArray[3]);
 }
