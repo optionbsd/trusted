@@ -1,4 +1,4 @@
-Array myArray = [10, true, false, "Hello"];
+Array myArray = [10, true, false, "Hello"]; //Your array
 
 Integer someInt = 10;
 Integer calcInt = 2+2*2;
