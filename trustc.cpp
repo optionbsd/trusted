@@ -210,6 +210,26 @@ string llvmGlobalString(const string &str, const string &name, int actualLen) {
     return "@" + name + " = private constant [" + to_string(actualLen) + " x i8] c\"" + escaped + "\"";
 }
 
+// Функция для пропуска блока, учитывающая вложенные фигурные скобки
+size_t skipBlock(const vector<string>& lines, size_t startIndex) {
+    int braceLevel = 0;
+    bool blockStarted = false;
+    for (size_t i = startIndex; i < lines.size(); i++) {
+        string currentLine = lines[i];
+        for (char c : currentLine) {
+            if (c == '{') {
+                braceLevel++;
+                blockStarted = true;
+            } else if (c == '}') {
+                braceLevel--;
+            }
+        }
+        if (blockStarted && braceLevel <= 0)
+            return i + 1;
+    }
+    return lines.size();
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         cerr << "Usage: trustc <filename>\n";
@@ -478,19 +498,9 @@ int main(int argc, char* argv[]) {
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
                 double conditionValue = evaluateExpression(conditionExpr, variables, arrays);
-                size_t currentLineIndex = lineIndex;
-
+                // Если условие ложно – пропускаем блок if, используя функцию skipBlock.
                 if (conditionValue != 1.0) {
-                    int braceLevel = 1;
-                    while (currentLineIndex < lines.size() && braceLevel > 0) {
-                        string currentLine = lines[currentLineIndex];
-                        for (char c : currentLine) {
-                            if (c == '{') braceLevel++;
-                            if (c == '}') braceLevel--;
-                        }
-                        currentLineIndex++;
-                    }
-                    lineIndex = currentLineIndex - 1;
+                    lineIndex = skipBlock(lines, lineIndex) - 1;
                 }
             } catch(exception& e) {
                 reportError(lineNumber, origLine, e.what());
@@ -546,6 +556,6 @@ int main(int argc, char* argv[]) {
     
     try { fs::remove_all(tmpDir); }
     catch(exception &e) { cerr << "Error removing tmp directory: " << e.what() << endl; }
-    
+
     return 0;
 }
