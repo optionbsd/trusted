@@ -30,6 +30,22 @@ string trim(const string &s) {
     return s.substr(start, end - start + 1);
 }
 
+// Функция для удаления однострочных комментариев, учитывая строковые литералы
+string removeLineComments(const string &line) {
+    bool inQuote = false;
+    for (size_t i = 0; i < line.size(); i++) {
+        if (line[i] == '\"') {
+            // Если кавычка не экранирована, переключаем флаг
+            if (i == 0 || line[i-1] != '\\')
+                inQuote = !inQuote;
+        }
+        if (!inQuote && i + 1 < line.size() && line[i] == '/' && line[i+1] == '/') {
+            return line.substr(0, i);
+        }
+    }
+    return line;
+}
+
 vector<string> splitArgs(const string &argsStr) {
     vector<string> args;
     string current;
@@ -245,7 +261,11 @@ int main(int argc, char* argv[]) {
     
     vector<string> lines;
     string line;
-    while(getline(inFile, line)) lines.push_back(line);
+    while(getline(inFile, line)) {
+        // Удаляем комментарии перед добавлением строки
+        line = removeLineComments(line);
+        lines.push_back(line);
+    }
     
     unordered_map<string, double> variables;
     unordered_map<string, string> stringVariables;
