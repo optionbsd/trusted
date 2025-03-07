@@ -7,7 +7,11 @@ String someString = "Hello from Trusted!";
 
 Bool doesCodeRun = false;
 
-if (!doesCodeRun) {
+Memory myFunction = {
+    print("Hi from myFunction");
+}
+
+if (!false) {
     print(someInt);
     print(calcInt);
     print(someString);
@@ -16,4 +20,6 @@ if (!doesCodeRun) {
     print(myArray[1]);
     print(myArray[2]);
     print(myArray[3]);
+
+    myFunction();
 }
