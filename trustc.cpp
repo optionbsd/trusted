@@ -100,6 +100,11 @@ private:
         while (pos < s.size() && (isalnum(s[pos]) || s[pos] == '_' || s[pos] == '[')) pos++;
         string ident = s.substr(start, pos - start);
         
+        if (ident == "true")
+            return 1.0;
+        if (ident == "false")
+            return 0.0;
+        
         size_t bracketPos = ident.find('[');
         if (bracketPos != string::npos) {
             string arrayName = ident.substr(0, bracketPos);
