@@ -15,12 +15,30 @@
 using namespace std;
 namespace fs = std::filesystem;
 
+template<typename Iterator>
+string join(Iterator begin, Iterator end, const string& separator) {
+    ostringstream oss;
+    if(begin != end) {
+        oss << *begin++;
+        while(begin != end)
+            oss << separator << *begin++;
+    }
+    return oss.str();
+}
+
 enum class ArrayElementType { NUMBER, BOOL, STRING };
 
 struct ArrayElement {
     ArrayElementType type;
     double numberValue;
     string stringValue;
+};
+
+struct FunctionInfo {
+    vector<string> body;
+    vector<pair<string, string>> parameters;
+    unordered_map<string, string> localStrings;
+    unordered_map<string, double> localVariables;
 };
 
 string trim(const string &s) {
@@ -30,7 +48,6 @@ string trim(const string &s) {
     return s.substr(start, end - start + 1);
 }
 
-// Функция для удаления однострочных комментариев, учитывая строковые литералы
 string removeLineComments(const string &line) {
     bool inQuote = false;
     for (size_t i = 0; i < line.size(); i++) {
@@ -74,8 +91,9 @@ class ExpressionParser {
 public:
     ExpressionParser(const string &expr, 
                     const unordered_map<string, double> &vars,
-                    const unordered_map<string, vector<ArrayElement>> &arrs)
-        : s(expr), pos(0), variables(vars), arrays(arrs) {}
+                    const unordered_map<string, vector<ArrayElement>> &arrs,
+                    const unordered_map<string, string> &strVars = {})
+        : s(expr), pos(0), variables(vars), arrays(arrs), stringVariables(strVars) {}
 
     double parse() {
         double result = parseExpression();
@@ -89,6 +107,7 @@ private:
     size_t pos;
     const unordered_map<string, double>& variables;
     const unordered_map<string, vector<ArrayElement>>& arrays;
+    const unordered_map<string, string>& stringVariables;
 
     void skipSpaces() { 
         while (pos < s.size() && isspace(s[pos])) pos++; 
@@ -99,26 +118,21 @@ private:
         while (pos < s.size() && (isalnum(s[pos]) || s[pos] == '_' || s[pos] == '[')) pos++;
         string ident = s.substr(start, pos - start);
         
-        if (ident == "true")
-            return 1.0;
-        if (ident == "false")
-            return 0.0;
+        if (ident == "true") return 1.0;
+        if (ident == "false") return 0.0;
         
         size_t bracketPos = ident.find('[');
         if (bracketPos != string::npos) {
             string arrayName = ident.substr(0, bracketPos);
             string indexExpr = ident.substr(bracketPos + 1, ident.size() - bracketPos - 2);
-            
             try {
-                ExpressionParser indexParser(indexExpr, variables, arrays);
+                ExpressionParser indexParser(indexExpr, variables, arrays, stringVariables);
                 double index = indexParser.parse();
                 int idx = static_cast<int>(index);
-                
                 if (!arrays.count(arrayName))
                     throw runtime_error("Array '" + arrayName + "' not found");
                 if (idx < 0 || idx >= arrays.at(arrayName).size())
                     throw runtime_error("Index out of bounds");
-                
                 ArrayElement elem = arrays.at(arrayName)[idx];
                 if (elem.type == ArrayElementType::STRING)
                     throw runtime_error("Cannot use string in numeric expression");
@@ -128,10 +142,14 @@ private:
             }
         }
         
-        auto it = variables.find(ident);
-        if (it == variables.end())
-            throw runtime_error("Undefined variable: " + ident);
-        return it->second;
+        auto varIt = variables.find(ident);
+        if (varIt != variables.end()) return varIt->second;
+        
+        auto strIt = stringVariables.find(ident);
+        if (strIt != stringVariables.end())
+            throw runtime_error("Cannot use string variable in numeric context");
+        
+        throw runtime_error("Undefined variable: " + ident);
     }
 
     double parseExpression() {
@@ -198,13 +216,6 @@ private:
     }
 };
 
-double evaluateExpression(const string &expr, 
-                         const unordered_map<string, double> &vars,
-                         const unordered_map<string, vector<ArrayElement>> &arrs) {
-    ExpressionParser parser(expr, vars, arrs);
-    return parser.parse();
-}
-
 string formatNumber(double num) {
     ostringstream oss;
     if (fabs(num - round(num)) < 1e-9) oss << static_cast<long long>(round(num));
@@ -225,11 +236,9 @@ string llvmGlobalString(const string &str, const string &name, int actualLen) {
             escaped += buf;
         } else escaped.push_back(c);
     }
-    escaped += "\\0A\\00";
-    return "@" + name + " = private constant [" + to_string(actualLen) + " x i8] c\"" + escaped + "\"";
+    return "@" + name + " = private constant [" + to_string(actualLen) + " x i8] c\"" + escaped + "\\00\"";
 }
 
-// Функция для пропуска блока, учитывающая вложенные фигурные скобки
 size_t skipBlock(const vector<string>& lines, size_t startIndex) {
     int braceLevel = 0;
     bool blockStarted = false;
@@ -272,14 +281,10 @@ int main(int argc, char* argv[]) {
     unordered_map<string, double> variables;
     unordered_map<string, string> stringVariables;
     unordered_map<string, vector<ArrayElement>> arrays;
-    // Для вывода из print и для вызовов функций будем использовать outputs:
-    // Если строка начинается с "CALL_FUNCTION:" – это вызов функции.
     vector<string> outputs;
     vector<int> outLengths;
-    
-    // Хранение объявлений функций: имя -> вектор строк тела функции
-    unordered_map<string, vector<string>> functions;
-    
+    unordered_map<string, FunctionInfo> functions;
+    int argCounter = 0;
     int lineNumber = 0;
     bool errorOccurred = false;
     
@@ -287,13 +292,10 @@ int main(int argc, char* argv[]) {
         lineNumber++;
         string origLine = lines[lineIndex];
         string lineTrimmed = trim(origLine);
-
         if (lineTrimmed.empty() || lineTrimmed == "}") {
             lineNumber--;
             continue;
         }
-        
-        // Обработка объявления переменных и массивов
         if (lineTrimmed.rfind("Integer", 0) == 0) {
             string rest = trim(lineTrimmed.substr(7));
             size_t pos = 0;
@@ -319,8 +321,8 @@ int main(int argc, char* argv[]) {
             }
             rest = trim(rest.substr(0, rest.size()-1));
             try {
-                double val = evaluateExpression(rest, variables, arrays);
-                variables[varName] = val;
+                ExpressionParser parser(rest, variables, arrays, stringVariables);
+                variables[varName] = parser.parse();
             } catch(exception &e) {
                 reportError(lineNumber, origLine, e.what());
                 errorOccurred = true;
@@ -383,32 +385,26 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 continue;
             }
-            
             string varPart = trim(rest.substr(0, eqPos));
             if (varPart.empty() || !(isalpha(varPart[0]) || varPart[0] == '_')) {
                 reportError(lineNumber, origLine, "invalid array name");
                 errorOccurred = true;
                 continue;
             }
-            
             string arrayName = varPart;
             string elementsPart = trim(rest.substr(eqPos + 1));
             if (!elementsPart.empty() && elementsPart.back() == ';') elementsPart.pop_back();
-            
             if (elementsPart.empty() || elementsPart.front() != '[' || elementsPart.back() != ']') {
                 reportError(lineNumber, origLine, "array elements must be enclosed in []");
                 errorOccurred = true;
                 continue;
             }
-            
             elementsPart = elementsPart.substr(1, elementsPart.size() - 2);
             vector<string> elements = splitArgs(elementsPart);
             vector<ArrayElement> arrayElements;
-            
             for (string elemStr : elements) {
                 elemStr = trim(elemStr);
                 ArrayElement elem;
-                
                 if (elemStr.front() == '\"' && elemStr.back() == '\"') {
                     elem.type = ArrayElementType::STRING;
                     elem.stringValue = elemStr.substr(1, elemStr.size() - 2);
@@ -420,7 +416,8 @@ int main(int argc, char* argv[]) {
                     elem.numberValue = 0.0;
                 } else {
                     try {
-                        elem.numberValue = evaluateExpression(elemStr, variables, arrays);
+                        ExpressionParser parser(elemStr, variables, arrays, stringVariables);
+                        elem.numberValue = parser.parse();
                         elem.type = ArrayElementType::NUMBER;
                     } catch (exception &e) {
                         reportError(lineNumber, origLine, e.what());
@@ -432,7 +429,6 @@ int main(int argc, char* argv[]) {
             }
             if (!errorOccurred) arrays[arrayName] = arrayElements;
         }
-        // Обработка объявления функций
         else if (lineTrimmed.rfind("Memory", 0) == 0) {
             string rest = trim(lineTrimmed.substr(6));
             size_t eqPos = rest.find('=');
@@ -441,34 +437,47 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-            string funcName = trim(rest.substr(0, eqPos));
+            string funcDecl = trim(rest.substr(0, eqPos));
+            string funcName;
+            vector<pair<string, string>> params;
+            size_t openParen = funcDecl.find('(');
+            if(openParen != string::npos) {
+                size_t closeParen = funcDecl.find(')', openParen);
+                if(closeParen == string::npos) {
+                    reportError(lineNumber, origLine, "missing closing parenthesis");
+                    errorOccurred = true;
+                    break;
+                }
+                funcName = trim(funcDecl.substr(0, openParen));
+                string paramsStr = trim(funcDecl.substr(openParen+1, closeParen-openParen-1));
+                vector<string> paramsList = splitArgs(paramsStr);
+                for(string &param : paramsList) {
+                    size_t spacePos = param.find_last_of(' ');
+                    if(spacePos == string::npos) {
+                        reportError(lineNumber, origLine, "invalid parameter syntax");
+                        errorOccurred = true;
+                        break;
+                    }
+                    string type = trim(param.substr(0, spacePos));
+                    string name = trim(param.substr(spacePos+1));
+                    params.emplace_back(type, name);
+                }
+            } else {
+                funcName = funcDecl;
+            }
             rest = trim(rest.substr(eqPos + 1));
             if(rest != "{") {
-                reportError(lineNumber, origLine, "expected '{' after '=' in function declaration");
+                reportError(lineNumber, origLine, "expected '{' after function declaration");
                 errorOccurred = true;
                 break;
             }
-            // Определяем блок функции
             size_t endBlock = skipBlock(lines, lineIndex);
-            // Сохраним тело функции без первой и последней строки (открывающая и закрывающая фигурные скобки)
             vector<string> funcBody;
-            for (size_t i = lineIndex + 1; i < endBlock - 1; i++) {
+            for(size_t i = lineIndex + 1; i < endBlock - 1; i++) {
                 funcBody.push_back(lines[i]);
             }
-            functions[funcName] = funcBody;
+            functions[funcName] = {funcBody, params};
             lineIndex = endBlock - 1;
-        }
-        // Обработка вызова функции: идентификатор с последующими "();"
-        else if (lineTrimmed.size() > 3 && lineTrimmed.substr(lineTrimmed.size()-3) == "();") {
-            string funcName = trim(lineTrimmed.substr(0, lineTrimmed.size()-3));
-            if(functions.find(funcName) == functions.end()){
-                reportError(lineNumber, origLine, "undefined function: " + funcName);
-                errorOccurred = true;
-                break;
-            }
-            // Записываем специальную метку для генерации вызова функции в IR
-            outputs.push_back("CALL_FUNCTION:" + funcName);
-            outLengths.push_back(0);
         }
         else if (lineTrimmed.rfind("print", 0) == 0) {
             size_t pos = 5;
@@ -494,31 +503,25 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-            
             vector<string> args = splitArgs(argsStr);
             if(args.size() != 1) {
                 reportError(lineNumber, origLine, "print expects exactly one argument");
                 errorOccurred = true;
                 break;
             }
-            
             string outputArg = args[0];
             string outStr;
             size_t bracketOpen = outputArg.find('[');
             size_t bracketClose = outputArg.find(']');
-            
             if (bracketOpen != string::npos && bracketClose == outputArg.size() - 1) {
                 string arrayName = outputArg.substr(0, bracketOpen);
                 string indexExpr = outputArg.substr(bracketOpen + 1, bracketClose - bracketOpen - 1);
-                
                 try {
-                    ExpressionParser indexParser(indexExpr, variables, arrays);
+                    ExpressionParser indexParser(indexExpr, variables, arrays, stringVariables);
                     double index = indexParser.parse();
                     int idx = static_cast<int>(index);
-                    
                     if (!arrays.count(arrayName)) throw runtime_error("Array '" + arrayName + "' not found");
                     if (idx < 0 || idx >= arrays[arrayName].size()) throw runtime_error("Index out of bounds");
-                    
                     ArrayElement elem = arrays[arrayName][idx];
                     switch (elem.type) {
                         case ArrayElementType::NUMBER: outStr = formatNumber(elem.numberValue); break;
@@ -539,7 +542,8 @@ int main(int argc, char* argv[]) {
                     outStr = strIt->second;
                 } else {
                     try {
-                        double result = evaluateExpression(outputArg, variables, arrays);
+                        ExpressionParser parser(outputArg, variables, arrays, stringVariables);
+                        double result = parser.parse();
                         outStr = formatNumber(result);
                     } catch(exception &e) {
                         reportError(lineNumber, origLine, e.what());
@@ -548,8 +552,52 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
+            // Добавляем перенос строки, если его нет
+            if(outStr.empty() || outStr.back() != '\n') {
+                outStr.push_back('\n');
+            }
             outputs.push_back(outStr);
-            outLengths.push_back(outStr.size() + 2);
+            outLengths.push_back(outStr.size() + 1);
+        }
+        else if (lineTrimmed.find('(') != string::npos && ((lineTrimmed.back() == ')') || (lineTrimmed.back() == ';' && lineTrimmed[lineTrimmed.size()-2] == ')'))) {
+            if(lineTrimmed.back() == ';')
+                lineTrimmed = trim(lineTrimmed.substr(0, lineTrimmed.size()-1));
+            size_t openParen = lineTrimmed.find('(');
+            size_t closeParen = lineTrimmed.find(')');
+            string funcName = trim(lineTrimmed.substr(0, openParen));
+            if(!functions.count(funcName)) {
+                reportError(lineNumber, origLine, "undefined function: " + funcName);
+                errorOccurred = true;
+                break;
+            }
+            FunctionInfo &func = functions[funcName];
+            string argsStr = trim(lineTrimmed.substr(openParen+1, closeParen-openParen-1));
+            vector<string> args = splitArgs(argsStr);
+            if(args.size() != func.parameters.size()) {
+                reportError(lineNumber, origLine, "wrong number of arguments for " + funcName);
+                errorOccurred = true;
+                break;
+            }
+            vector<string> llvmArgs;
+            for(size_t i = 0; i < args.size(); i++) {
+                auto &[type, name] = func.parameters[i];
+                if(type == "String") {
+                    if(args[i].size() < 2 || args[i].front() != '\"' || args[i].back() != '\"') {
+                        reportError(lineNumber, origLine, "string literal expected for parameter " + name);
+                        errorOccurred = true;
+                        break;
+                    }
+                    string content = args[i].substr(1, args[i].size()-2);
+                    string globalName = "argstr_" + to_string(argCounter++);
+                    outputs.push_back("GLOBAL:" + globalName + ":" + content);
+                    llvmArgs.push_back("i8* getelementptr inbounds ([" + to_string(content.size()+1) + 
+                                    " x i8], [" + to_string(content.size()+1) + 
+                                    " x i8]* @" + globalName + ", i32 0, i32 0)");
+                }
+            }
+            if(errorOccurred) break;
+            outputs.push_back("CALL:" + funcName + ":" + join(llvmArgs.begin(), llvmArgs.end(), ":"));
+            outLengths.push_back(0);
         }
         else if (lineTrimmed.rfind("if", 0) == 0) {
             size_t openParen = lineTrimmed.find('(');
@@ -559,10 +607,10 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-            
             string conditionExpr = trim(lineTrimmed.substr(openParen + 1, closeParen - openParen - 1));
             try {
-                double conditionValue = evaluateExpression(conditionExpr, variables, arrays);
+                ExpressionParser parser(conditionExpr, variables, arrays, stringVariables);
+                double conditionValue = parser.parse();
                 if (conditionValue != 1.0) {
                     lineIndex = skipBlock(lines, lineIndex) - 1;
                 }
@@ -579,87 +627,103 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    if (errorOccurred) return 1;
+    if(errorOccurred) return 1;
     
     fs::path tmpDir = "tmp";
     try { fs::create_directory(tmpDir); } 
     catch(exception &e) { cerr << "Error creating tmp directory: " << e.what() << endl; return 1; }
     
     ostringstream llvmIR;
-    llvmIR << "; ModuleID = \"trust_module\"\ndeclare i32 @printf(i8*, ...)\n\n";
+    llvmIR << "; ModuleID = 'trust'\n"
+           << "declare i32 @printf(i8*, ...)\n\n";
     
-    // Генерируем глобальные строки для print вызовов в основном блоке.
-    vector<string> globalNames;
-    for(size_t i = 0; i < outputs.size(); i++) {
-        // Если это вызов функции, пропускаем генерацию глобальной строки.
-        if(outputs[i].substr(0, 14) == "CALL_FUNCTION:") continue;
-        string globalName = ".str." + to_string(i);
-        globalNames.push_back(globalName);
-        llvmIR << llvmGlobalString(outputs[i], globalName, outLengths[i]) << "\n";
+    // Собираем все глобальные определения строк, только если длина больше 0
+    vector<string> allGlobalStrings;
+    for (size_t i = 0; i < outputs.size(); i++) {
+        if(outputs[i].rfind("GLOBAL:", 0) == 0) {
+            size_t pos1 = outputs[i].find(':', 7);
+            string name = outputs[i].substr(7, pos1-7);
+            string content = outputs[i].substr(pos1+1);
+            allGlobalStrings.push_back(llvmGlobalString(content, name, content.size()+1));
+        }
+        else if(!outputs[i].empty() && outputs[i][0] != 'G' && outLengths[i] > 0) {
+            string globalName = "str." + to_string(i);
+            allGlobalStrings.push_back(llvmGlobalString(outputs[i], globalName, outLengths[i]));
+        }
     }
     
-    // Генерируем функцию main
+    // Генерация кода функций
+    ostringstream functionsIR;
+    for (auto &[funcName, funcInfo] : functions) {
+        ostringstream funcIR;
+        funcIR << "define void @" << funcName << "(";
+        vector<string> params;
+        for(auto &[type, name] : funcInfo.parameters) {
+            if(type == "String") {
+                params.push_back("i8* %" + name);
+            }
+        }
+        funcIR << join(params.begin(), params.end(), ", ") << ") {\nentry:\n";
+        for(string &fline : funcInfo.body) {
+            string ftrim = trim(fline);
+            if(ftrim.rfind("print", 0) == 0) {
+                size_t openParen = ftrim.find('(');
+                size_t closeParen = ftrim.find(')');
+                string arg = trim(ftrim.substr(openParen+1, closeParen-openParen-1));
+                bool isParam = false;
+                for(auto &[type, name] : funcInfo.parameters) {
+                    if(arg == name) {
+                        funcIR << "  call i32 (i8*, ...) @printf(i8* %" << name << ")\n";
+                        isParam = true;
+                        break;
+                    }
+                }
+                if(!isParam) {
+                    if(arg.size() >= 2 && arg.front() == '\"' && arg.back() == '\"') {
+                        string content = arg.substr(1, arg.size()-2);
+                        // Добавляем перенос строки, если его нет
+                        if(content.empty() || content.back() != '\n') {
+                            content.push_back('\n');
+                        }
+                        string globalName = "fstr_" + funcName + "_" + to_string(argCounter++);
+                        allGlobalStrings.push_back(llvmGlobalString(content, globalName, content.size()+1));
+                        funcIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([" 
+                               << content.size()+1 << " x i8], [" << content.size()+1 << " x i8]* @" 
+                               << globalName << ", i32 0, i32 0))\n";
+                    }
+                }
+            }
+        }
+        funcIR << "  ret void\n}\n";
+        functionsIR << funcIR.str();
+    }
+    
+    // Выводим все глобальные определения на уровне модуля
+    for(auto &globalDef : allGlobalStrings) {
+        llvmIR << globalDef << "\n";
+    }
+    
+    // Функция main
     llvmIR << "\ndefine i32 @main() {\nentry:\n";
-    int globalIndex = 0;
-    for(size_t i = 0; i < outputs.size(); i++) {
-        if(outputs[i].substr(0, 14) == "CALL_FUNCTION:") {
-            string funcName = outputs[i].substr(14);
-            llvmIR << "  call void @" << funcName << "()\n";
-        } else {
+    for (size_t i = 0; i < outputs.size(); i++) {
+        if(outputs[i].rfind("CALL:", 0) == 0) {
+            size_t pos1 = outputs[i].find(':', 5);
+            string funcName = outputs[i].substr(5, pos1-5);
+            string args = outputs[i].substr(pos1+1);
+            replace(args.begin(), args.end(), ':', ',');
+            llvmIR << "  call void @" << funcName << "(" << args << ")\n";
+        }
+        else if(!outputs[i].empty() && outputs[i][0] != 'G' && outLengths[i] > 0) {
+            string globalName = "str." + to_string(i);
             llvmIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
                    << outLengths[i] << " x i8], ["
-                   << outLengths[i] << " x i8]* @" << globalNames[globalIndex++] << ", i32 0, i32 0))\n";
+                   << outLengths[i] << " x i8]* @" << globalName << ", i32 0, i32 0))\n";
         }
     }
     llvmIR << "  ret i32 0\n}\n";
     
-    // Генерируем IR для функций
-    for (auto &p : functions) {
-        string funcName = p.first;
-        vector<string> funcBody = p.second;
-        // Для простоты генерируем функцию с поддержкой только вызовов print (без if и т.п.)
-        ostringstream funcIR;
-        // Собираем глобальные строки для вызовов print внутри функции
-        vector<string> funcGlobals;
-        vector<int> funcGlobalLens;
-        vector<string> funcOutputIR; // IR-инструкции внутри функции
-        int tempGlobalCount = 0;
-        for (string &fline : funcBody) {
-            string ftrim = trim(fline);
-            if (ftrim.rfind("print", 0) == 0) {
-                size_t pos = 5;
-                while(pos < ftrim.size() && isspace(ftrim[pos])) pos++;
-                if(pos >= ftrim.size() || ftrim[pos] != '(') continue;
-                pos++;
-                size_t argsStart = pos;
-                size_t closingParen = ftrim.find(')', pos);
-                if(closingParen == string::npos) continue;
-                string argsStr = trim(ftrim.substr(argsStart, closingParen - argsStart));
-                pos = closingParen + 1;
-                if(argsStr.size() >= 2 && argsStr.front() == '\"' && argsStr.back() == '\"') {
-                    string outStr = argsStr.substr(1, argsStr.size()-2);
-                    string globalName = ".fstr." + funcName + "." + to_string(tempGlobalCount);
-                    funcGlobals.push_back(llvmGlobalString(outStr, globalName, outStr.size()+2));
-                    funcGlobalLens.push_back(outStr.size()+2);
-                    funcOutputIR.push_back("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
-                                            + to_string(outStr.size()+2) + " x i8], [" 
-                                            + to_string(outStr.size()+2) + " x i8]* @" + globalName + ", i32 0, i32 0))");
-                    tempGlobalCount++;
-                }
-            }
-            // Можно расширить поддержку и для других выражений внутри функций
-        }
-        // Выводим глобальные строки для функции
-        for (auto &glob : funcGlobals) {
-            llvmIR << glob << "\n";
-        }
-        funcIR << "define void @" << funcName << "() {\nentry:\n";
-        for (auto &instr : funcOutputIR) {
-            funcIR << instr << "\n";
-        }
-        funcIR << "  ret void\n}\n";
-        llvmIR << funcIR.str();
-    }
+    // Добавляем сгенерированные функции
+    llvmIR << functionsIR.str();
     
     fs::path llvmFile = tmpDir / "output.ll";
     ofstream outLL(llvmFile);
@@ -671,7 +735,7 @@ int main(int argc, char* argv[]) {
     outLL.close();
     
     fs::path binPath = fs::path(inputFileName).parent_path() / fs::path(inputFileName).stem();
-    string compileCmd = "clang " + llvmFile.string() + " -o " + binPath.string();
+    string compileCmd = "clang -Wno-override-module " + llvmFile.string() + " -o " + binPath.string();
     if (system(compileCmd.c_str()) != 0) {
         cerr << "Compilation with clang failed." << endl;
         return 1;
@@ -679,6 +743,6 @@ int main(int argc, char* argv[]) {
     
     try { fs::remove_all(tmpDir); }
     catch(exception &e) { cerr << "Error removing tmp directory: " << e.what() << endl; }
-
+    
     return 0;
 }
