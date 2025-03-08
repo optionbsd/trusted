@@ -259,22 +259,17 @@ int main(int argc, char* argv[]) {
     unordered_map<string, double> globalVariables;
     unordered_map<string, string> globalStrings;
     unordered_map<string, vector<ArrayElement>> arrays;
-    // Сохраняем глобальные выводимые строки и маркеры вызова функций отдельно
-    vector<string> globalPrints;
-    vector<int> printLengths;
-    vector<string> globalCalls; // маркеры вызовов функции в виде "CALL:funcName:llvmArgs"
-    vector<int> callPositions; // позиция (в последовательности) где был вызов
+    // Сохраняем глобальные инструкции: для print – строки, для вызовов функций – маркеры
+    vector<pair<bool, string>> globalInstructions; // {isCall, content}
+    vector<int> instrLengths; // для print инструкций
     
     unordered_map<string, FunctionInfo> functions;
     
     int argCounter = 0;
     int lineNumber = 0;
     bool errorOccurred = false;
-    // Глобальный проход: разбор глобальных инструкций и определений функций
-    // Сохраняем инструкции в том порядке, в котором они встретились.
-    // Для print сохраняем строки, а для вызова функций – маркеры.
-    vector<pair<bool, string>> globalInstructions; // {isCall, content}
     
+    // Глобальный проход: разбор глобальных инструкций и определений функций
     for(size_t i = 0; i < lines.size(); i++){
         lineNumber++;
         string origLine = lines[i];
@@ -492,7 +487,6 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-            // Формируем маркер вызова функции в виде "CALL:funcName:arg1:arg2:..."
             ostringstream marker;
             marker << "CALL:" << funcName;
             for(size_t j = 0; j < argsList.size(); j++){
@@ -507,10 +501,9 @@ int main(int argc, char* argv[]) {
                     marker << ":" << "i8* getelementptr inbounds (["
                            << content.size()+1 << " x i8], [" << content.size()+1
                            << " x i8]* @argstr_" << argCounter++ << ", i32 0, i32 0)";
-                    // Регистрируем глобальную строку для аргумента
-                    globalPrints.push_back(content);
-                    printLengths.push_back(content.size()+1);
-                } else if(param.first == "Integer"){
+                    globalInstructions.push_back({false, content});
+                    instrLengths.push_back(content.size()+1);
+                } else if(param.first=="Integer"){
                     unordered_map<string, double> tempVars = globalVariables;
                     ExpressionParser parser(argsList[j], tempVars);
                     double value = parser.parse();
@@ -518,6 +511,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             globalInstructions.push_back({true, marker.str()});
+            instrLengths.push_back(0);
         }
         else if(lineTrimmed.rfind("print", 0) == 0) {
             size_t pos = 5;
@@ -549,7 +543,7 @@ int main(int argc, char* argv[]) {
                 if(outStr.empty() || outStr.back() != '\n')
                     outStr.push_back('\n');
                 globalInstructions.push_back({false, outStr});
-                printLengths.push_back(outStr.size()+1);
+                instrLengths.push_back(outStr.size()+1);
             } catch(exception &e) {
                 reportError(lineNumber, origLine, e.what());
                 errorOccurred = true;
@@ -575,13 +569,13 @@ int main(int argc, char* argv[]) {
     llvmIR << "; ModuleID = 'trust'\n"
            << "declare i32 @printf(i8*, ...)\n\n";
     
-    // Генерация глобальных строк только для тех инструкций, которые не являются маркерами вызовов
+    // Генерация глобальных строк для print-инструкций (не маркеры вызова)
     vector<string> allGlobalStrings;
     int printIndex = 0;
     for(size_t i = 0; i < globalInstructions.size(); i++){
         if(!globalInstructions[i].first) { // обычный print
             string globalName = "str." + to_string(i);
-            allGlobalStrings.push_back(llvmGlobalString(globalInstructions[i].second, globalName, printLengths[printIndex++]));
+            allGlobalStrings.push_back(llvmGlobalString(globalInstructions[i].second, globalName, instrLengths[printIndex++]));
         }
     }
     
@@ -603,7 +597,19 @@ int main(int argc, char* argv[]) {
         }
         funcIR << join(paramIR.begin(), paramIR.end(), ", ") << ") {\nentry:\n";
         
+        // Создаем локальную таблицу переменных и добавляем параметры,
+        // чтобы при обработке print внутри функции они были доступны
         unordered_map<string, double> localVariables;
+        // Для параметров мы не знаем их значение на этапе компиляции, поэтому
+        // просто регистрируем их имена в локальной таблице с фиктивным значением (например, 0)
+        // Это нужно лишь для распознавания имени параметра при разборе print.
+        for(auto &p : funcInfo.parameters) {
+            if(p.first == "Integer") {
+                localVariables[p.second] = 0; // фиктивное значение
+            }
+        }
+        
+        // Обработка инструкций в теле функции
         for(auto &fline : funcInfo.body) {
             string ftrim = trim(fline);
             if(ftrim.empty()) continue;
@@ -637,6 +643,7 @@ int main(int argc, char* argv[]) {
                     break;
                 }
             }
+            // Обработка print внутри функции
             else if(ftrim.rfind("print", 0) == 0) {
                 size_t pos = 5;
                 while(pos < ftrim.size() && isspace(ftrim[pos])) pos++;
@@ -653,23 +660,41 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 string argExpr = trim(ftrim.substr(pos, closingParen-pos));
-                try {
-                    unordered_map<string, double> tempVars = globalVariables;
-                    for(auto &lv : localVariables)
-                        tempVars[lv.first] = lv.second;
-                    ExpressionParser parser(argExpr, tempVars);
-                    double value = parser.parse();
-                    string numStr = formatNumber(value);
-                    if(numStr.empty() || numStr.back() != '\n')
-                        numStr.push_back('\n');
-                    string numFormatStr = "fmt_" + funcName + "_" + to_string(argCounter++);
-                    allGlobalStrings.push_back(llvmGlobalString("%d\n", numFormatStr, 4));
-                    funcIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @"
-                           << numFormatStr << ", i32 0, i32 0), i32 " << static_cast<int>(value) << ")\n";
-                } catch(exception &e) {
-                    reportError(lineNumber, fline, e.what());
-                    errorOccurred = true;
-                    break;
+                // Если аргумент print – это имя параметра, генерируем вызов printf с этим параметром
+                bool isParam = false;
+                for(auto &p : funcInfo.parameters) {
+                    if(argExpr == p.second) {
+                        if(p.first == "String") {
+                            funcIR << "  call i32 (i8*, ...) @printf(i8* %" << p.second << ")\n";
+                        } else if(p.first == "Integer") {
+                            string numFormatStr = "fmt_" + funcName + "_" + to_string(argCounter++);
+                            allGlobalStrings.push_back(llvmGlobalString("%d\n", numFormatStr, 4));
+                            funcIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @"
+                                   << numFormatStr << ", i32 0, i32 0), i32 %" << p.second << ")\n";
+                        }
+                        isParam = true;
+                        break;
+                    }
+                }
+                if(!isParam) {
+                    try {
+                        unordered_map<string, double> tempVars = globalVariables;
+                        for(auto &lv : localVariables)
+                            tempVars[lv.first] = lv.second;
+                        ExpressionParser parser(argExpr, tempVars);
+                        double value = parser.parse();
+                        string numStr = formatNumber(value);
+                        if(numStr.empty() || numStr.back() != '\n')
+                            numStr.push_back('\n');
+                        string numFormatStr = "fmt_" + funcName + "_" + to_string(argCounter++);
+                        allGlobalStrings.push_back(llvmGlobalString("%d\n", numFormatStr, 4));
+                        funcIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @"
+                               << numFormatStr << ", i32 0, i32 0), i32 " << static_cast<int>(value) << ")\n";
+                    } catch(exception &e) {
+                        reportError(lineNumber, fline, e.what());
+                        errorOccurred = true;
+                        break;
+                    }
                 }
             }
             else if(ftrim.find('(') != string::npos &&
@@ -735,31 +760,26 @@ int main(int argc, char* argv[]) {
     
     // Генерация функции main()
     llvmIR << "\ndefine i32 @main() {\nentry:\n";
-    // Проходим по глобальным инструкциям в порядке их появления
     printIndex = 0;
     for(auto &instr : globalInstructions) {
         if(instr.first) {
-            // Маркер вызова функции: строка имеет вид "CALL:funcName:arg1:arg2:..."
-            // Разбиваем по двоеточию:
             vector<string> parts;
             istringstream iss(instr.second);
             string token;
             while(getline(iss, token, ':'))
                 parts.push_back(token);
-            if(parts.size() < 2) continue; // некорректный маркер
+            if(parts.size() < 2) continue;
             string funcName = parts[1];
-            // Аргументы записаны уже в виде llvm IR
             vector<string> llvmArgs;
             for(size_t i = 2; i < parts.size(); i++){
                 llvmArgs.push_back(parts[i]);
             }
             llvmIR << "  call void @" << funcName << "(" << join(llvmArgs.begin(), llvmArgs.end(), ", ") << ")\n";
         } else {
-            // Обычный вывод через printf
             string globalName = "str." + to_string(&instr - &globalInstructions[0]);
             llvmIR << "  call i32 (i8*, ...) @printf(i8* getelementptr inbounds (["
-                  << printLengths[printIndex] << " x i8], ["
-                  << printLengths[printIndex] << " x i8]* @" << globalName << ", i32 0, i32 0))\n";
+                  << instrLengths[printIndex] << " x i8], ["
+                  << instrLengths[printIndex] << " x i8]* @" << globalName << ", i32 0, i32 0))\n";
             printIndex++;
         }
     }
