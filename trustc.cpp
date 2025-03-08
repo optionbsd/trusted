@@ -259,9 +259,8 @@ int main(int argc, char* argv[]) {
     unordered_map<string, double> globalVariables;
     unordered_map<string, string> globalStrings;
     unordered_map<string, vector<ArrayElement>> arrays;
-    // Сохраняем глобальные инструкции: для print – строки, для вызовов функций – маркеры
-    // Пара: {isCall, content}
-    vector<pair<bool, string>> globalInstructions;
+    // Глобальные инструкции: для print – строки, для вызовов функций – маркеры
+    vector<pair<bool, string>> globalInstructions; // {isCall, content}
     vector<int> instrLengths;
     
     unordered_map<string, FunctionInfo> functions;
@@ -270,7 +269,7 @@ int main(int argc, char* argv[]) {
     int lineNumber = 0;
     bool errorOccurred = false;
     
-    // Вектор для глобальных определений строк (включая те, что нужны для аргументов)
+    // Вектор для глобальных определений строк (например, для аргументов)
     vector<string> allGlobalStrings;
     
     // Глобальный проход: разбор инструкций и определений
@@ -469,7 +468,54 @@ int main(int argc, char* argv[]) {
             functions[funcName] = {funcBody, params};
             i = endBlock - 1;
         }
-        // Обработка вызова функции в глобальной области
+        // Сначала проверяем, является ли строка оператором print
+        else if(lineTrimmed.rfind("print", 0) == 0) {
+            size_t pos = 5;
+            while(pos < lineTrimmed.size() && isspace(lineTrimmed[pos])) pos++;
+            if(pos >= lineTrimmed.size() || lineTrimmed[pos] != '(') {
+                reportError(lineNumber, origLine, "expected '(' after print");
+                errorOccurred = true;
+                break;
+            }
+            pos++;
+            size_t closingParen = lineTrimmed.find(')', pos);
+            if(closingParen == string::npos) {
+                reportError(lineNumber, origLine, "expected matching ')'");
+                errorOccurred = true;
+                break;
+            }
+            string argExpr = trim(lineTrimmed.substr(pos, closingParen-pos));
+            pos = closingParen+1;
+            while(pos < lineTrimmed.size() && isspace(lineTrimmed[pos])) pos++;
+            if(pos >= lineTrimmed.size() || lineTrimmed[pos] != ';') {
+                reportError(lineNumber, origLine, "expected ';' at end of print");
+                errorOccurred = true;
+                break;
+            }
+            // Если аргумент – строковый литерал, используем его напрямую
+            if(argExpr.size() >= 2 && argExpr.front()=='\"' && argExpr.back()=='\"') {
+                string outStr = argExpr.substr(1, argExpr.size()-2);
+                if(outStr.empty() || outStr.back()!='\n')
+                    outStr.push_back('\n');
+                globalInstructions.push_back({false, outStr});
+                instrLengths.push_back(outStr.size()+1);
+            } else {
+                try {
+                    ExpressionParser parser(argExpr, globalVariables);
+                    double value = parser.parse();
+                    string outStr = formatNumber(value);
+                    if(outStr.empty() || outStr.back()!='\n')
+                        outStr.push_back('\n');
+                    globalInstructions.push_back({false, outStr});
+                    instrLengths.push_back(outStr.size()+1);
+                } catch(exception &e) {
+                    reportError(lineNumber, origLine, e.what());
+                    errorOccurred = true;
+                    break;
+                }
+            }
+        }
+        // Затем проверяем вызов функции
         else if(lineTrimmed.find('(') != string::npos &&
                 (lineTrimmed.back() == ')' || (lineTrimmed.back() == ';' && lineTrimmed[lineTrimmed.size()-2] == ')'))) {
             string callLine = lineTrimmed;
@@ -502,7 +548,6 @@ int main(int argc, char* argv[]) {
                         break;
                     }
                     string content = argsList[j].substr(1, argsList[j].size()-2);
-                    // Создаем глобальное определение для строкового аргумента
                     string globalName = "argstr_" + to_string(argCounter++);
                     allGlobalStrings.push_back(llvmGlobalString(content, globalName, content.size()+1));
                     marker << ":" << "i8* getelementptr inbounds (["
@@ -517,43 +562,6 @@ int main(int argc, char* argv[]) {
             }
             globalInstructions.push_back({true, marker.str()});
             instrLengths.push_back(0);
-        }
-        else if(lineTrimmed.rfind("print", 0) == 0) {
-            size_t pos = 5;
-            while(pos < lineTrimmed.size() && isspace(lineTrimmed[pos])) pos++;
-            if(pos >= lineTrimmed.size() || lineTrimmed[pos] != '(') {
-                reportError(lineNumber, origLine, "expected '(' after print");
-                errorOccurred = true;
-                break;
-            }
-            pos++;
-            size_t closingParen = lineTrimmed.find(')', pos);
-            if(closingParen == string::npos) {
-                reportError(lineNumber, origLine, "expected matching ')'");
-                errorOccurred = true;
-                break;
-            }
-            string argExpr = trim(lineTrimmed.substr(pos, closingParen-pos));
-            pos = closingParen+1;
-            while(pos < lineTrimmed.size() && isspace(lineTrimmed[pos])) pos++;
-            if(pos >= lineTrimmed.size() || lineTrimmed[pos] != ';') {
-                reportError(lineNumber, origLine, "expected ';' at end of print");
-                errorOccurred = true;
-                break;
-            }
-            try {
-                ExpressionParser parser(argExpr, globalVariables);
-                double value = parser.parse();
-                string outStr = formatNumber(value);
-                if(outStr.empty() || outStr.back() != '\n')
-                    outStr.push_back('\n');
-                globalInstructions.push_back({false, outStr});
-                instrLengths.push_back(outStr.size()+1);
-            } catch(exception &e) {
-                reportError(lineNumber, origLine, e.what());
-                errorOccurred = true;
-                break;
-            }
         }
         else {
             reportError(lineNumber, origLine, "unrecognized statement");
@@ -574,7 +582,7 @@ int main(int argc, char* argv[]) {
     llvmIR << "; ModuleID = 'trust'\n"
            << "declare i32 @printf(i8*, ...)\n\n";
     
-    // Генерация глобальных строк для print-инструкций (не маркеры вызова)
+    // Генерация глобальных строк для print-инструкций
     int printIndex = 0;
     for(size_t i = 0; i < globalInstructions.size(); i++){
         if(!globalInstructions[i].first) { // обычный print
