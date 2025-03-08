@@ -85,6 +85,18 @@ void reportError(int lineNumber, const string &origLine, const string &descripti
          << "\" - " << description << "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << endl;
 }
 
+// Функция для экранирования символов '%' в строке (замена на "%%")
+string escapePercent(const string &input) {
+    string result;
+    for (char c : input) {
+        if(c == '%')
+            result += "%%";
+        else
+            result.push_back(c);
+    }
+    return result;
+}
+
 class ExpressionParser {
 public:
     ExpressionParser(const string &expr, 
@@ -492,9 +504,10 @@ int main(int argc, char* argv[]) {
                 errorOccurred = true;
                 break;
             }
-            // Если аргумент – строковый литерал, используем его напрямую
+            // Если аргумент – строковый литерал, экранируем символы '%'
             if(argExpr.size() >= 2 && argExpr.front()=='\"' && argExpr.back()=='\"') {
                 string outStr = argExpr.substr(1, argExpr.size()-2);
+                outStr = escapePercent(outStr);
                 if(outStr.empty() || outStr.back()!='\n')
                     outStr.push_back('\n');
                 globalInstructions.push_back({false, outStr});
